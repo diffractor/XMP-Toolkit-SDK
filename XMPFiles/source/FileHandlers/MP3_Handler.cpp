@@ -63,6 +63,10 @@ const static ReconProps reconProps[] = {
 	{ "TPE4", "TP4", kXMP_NS_DM,	"engineer"  },
 	{ "WCOP", "WCP", kXMP_NS_XMP_Rights,	"WebStatement"  },
 
+	// diffractor reconciliations
+	{ "POPM", "POPM", kXMP_NS_XMP, "Rating"  },
+	{ "TPE2", "TP2", kXMP_NS_DM,	"albumArtist" },
+
 	{ 0, 0, 0, 0 }	// must be last as a sentinel
 };
 
@@ -431,6 +435,23 @@ void MP3_MetaHandler::ProcessXMP()
 								break;
 							}
 
+						case 0x504F504D: // POPM diffractor
+							{
+								if (!id3Text.empty())
+								{
+									const auto rating_pos = strlen(id3Text.c_str()) + 1;
+
+									if (rating_pos < id3Text.size())
+									{
+										char rating_text[8];
+										const auto rating_value = 1 + (*reinterpret_cast<const uint8_t*>(id3Text.data() + rating_pos) / 52);
+										_itoa_s(rating_value, rating_text, 8, 10);
+										this->xmpObj.SetProperty(reconProps[r].ns, reconProps[r].prop, rating_text);
+									}
+								}
+								break;
+							}
+
 						default:
 							// NB: COMM/USLT need no special fork regarding language alternatives/multiple occurence.
 							//		relevant code forks are in ID3_Support::getFrameValue()
@@ -473,6 +494,15 @@ void MP3_MetaHandler::ProcessXMP()
 
 }	// MP3_MetaHandler::ProcessXMP
 
+static char calc_rating_byte(const int rating)
+{
+	if (rating == 5) return static_cast<char>(255u);
+	if (rating == 4) return static_cast<char>(196u);
+	if (rating == 3) return static_cast<char>(128u);
+	if (rating == 2) return static_cast<char>(64u);
+	if (rating == 1) return static_cast<char>(1u);
+	return 0;
+}
 
 // =================================================================================================
 // MP3_MetaHandler::UpdateFile
@@ -502,6 +532,7 @@ void MP3_MetaHandler::UpdateFile ( bool doSafeUpdate )
 		std::string value;
 		bool needDescriptor = false;
 		bool needEncodingByte = true;
+		bool isAlreadyEncoded = false;
 
 		XMP_Uns32 logicalID = GetUns32BE ( reconProps[r].mainID );
 		XMP_Uns32 storedID = logicalID;
@@ -609,6 +640,33 @@ void MP3_MetaHandler::UpdateFile ( bool doSafeUpdate )
 				needEncodingByte = false;
 				if (! xmpObj.GetProperty( reconProps[r].ns, reconProps[r].prop, &value, 0 )) value.erase(); // if not, erase string
 				break;
+
+			case 0x504F504D: //POPM diffractor
+			{
+				needEncodingByte = false;
+				const auto found = xmpObj.GetProperty(reconProps[r].ns, reconProps[r].prop, &value, 0);
+
+				if (found)
+				{
+					const auto rating = atoi(value.c_str());
+
+					value = "Windows Media Player 9 Series";
+					value += '\0';
+					value += calc_rating_byte(rating);
+					value += '\0';
+					value += '\0';
+					value += '\0';
+					value += '\0';
+
+					isAlreadyEncoded = true;
+				}
+				else
+				{
+					value.erase(); // if not, erase string
+				}
+			}
+			break;
+
 	
 			case 0x5452434B: // TRCK
 			case 0x54504F53: // TPOS
@@ -637,10 +695,10 @@ void MP3_MetaHandler::UpdateFile ( bool doSafeUpdate )
 		bool needUTF16 = false;
 		if ( needEncodingByte ) needUTF16 = (! ReconcileUtils::IsASCII ( value.c_str(), value.size() ) );
 		if ( frame != 0 ) {
-			frame->setFrameValue( value, needDescriptor, needUTF16, false, needEncodingByte );
+			frame->setFrameValue( value, needDescriptor, needUTF16, false, needEncodingByte, isAlreadyEncoded);
 		} else {
 			ID3v2Frame* newFrame=new ID3v2Frame( storedID );
-			newFrame->setFrameValue( value, needDescriptor,  needUTF16, false, needEncodingByte ); //always write as utf16-le incl. BOM
+			newFrame->setFrameValue( value, needDescriptor,  needUTF16, false, needEncodingByte, isAlreadyEncoded); //always write as utf16-le incl. BOM
 			framesVector.push_back( newFrame );
 			framesMap[ storedID ] = newFrame;
 			continue;

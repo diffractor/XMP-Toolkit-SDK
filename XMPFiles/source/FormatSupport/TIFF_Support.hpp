@@ -253,6 +253,16 @@ enum {
 	kTIFF_Sharpness = 41994,
 	kTIFF_DeviceSettingDescription = 41995,
 	kTIFF_SubjectDistanceRange = 41996,
+	
+	// Windows IFD tags
+	kTIFF_XPTitle = 40091,
+	kTIFF_XPComment = 40092,
+	kTIFF_XPAuthor = 40093,
+	kTIFF_XPKeywords = 40094,
+	kTIFF_XPSubject = 40095,
+
+	kTIFF_Rating = 18246, // 0x4746,
+	kTIFF_RatingPercent = 18249, //0x4749,
 
 	// GPS IFD tags.
 
@@ -293,8 +303,9 @@ enum {
 	
 	kTIFF_ExifIFDPointer = 34665,				// Found in 0th IFD
 	kTIFF_GPSInfoIFDPointer = 34853,			// Found in 0th IFD
-	kTIFF_InteroperabilityIFDPointer = 40965	// Found in Exif IFD
-
+	kTIFF_InteroperabilityIFDPointer = 40965,	// Found in Exif IFD
+	
+	kTIFF_InteroperabilityIndex = 1
 };
 
 // *** Temporary hack:
@@ -330,13 +341,25 @@ static const XMP_Uns16 sKnownPrimaryIFDTags[] =
 	kTIFF_YCbCrPositioning,				//   531
 	kTIFF_ReferenceBlackWhite,			//   532
 	kTIFF_XMP,							//   700
+
+	kTIFF_Rating,						// 18246
+	kTIFF_RatingPercent,				// 18249
+	
 	kTIFF_Copyright,					// 33432
 	kTIFF_IPTC,							// 33723
 	kTIFF_PSIR,							// 34377
 	kTIFF_ExifIFDPointer,				// 34665
 	kTIFF_GPSInfoIFDPointer,			// 34853
+
+	kTIFF_XPTitle,						// 40091
+	kTIFF_XPComment,					// 40092
+	kTIFF_XPAuthor,						// 40093
+	kTIFF_XPKeywords,					// 40094
+	kTIFF_XPSubject,					// 40095
+
 	kTIFF_DNGVersion,					// 50706
-	kTIFF_DNGBackwardVersion,			// 50707
+	kTIFF_DNGBackwardVersion,			// 50707	
+
 	0xFFFF	// Must be last as a sentinel.
 };
 
@@ -619,7 +642,9 @@ public:
 	virtual void SetTag_EncodedString ( XMP_Uns8 ifd, XMP_Uns16 id, const std::string& utf8Str, XMP_Uns8 encoding ) = 0;
 
 	bool DecodeString ( const void * encodedPtr, size_t encodedLen, std::string* utf8Str ) const;
+	bool DecodeWindowsString(const void* encodedPtr, size_t encodedLen, std::string* utf8Str) const;
 	bool EncodeString ( const std::string& utf8Str, XMP_Uns8 encoding, std::string* encodedStr );
+	bool EncodeWindowsString(const std::string& utf8Str, std::string* encodedStr);
 
 	// ---------------------------------------------------------------------------------------------
 	// \c IsChanged returns true if a read-write stream has changes that need to be saved. This is
