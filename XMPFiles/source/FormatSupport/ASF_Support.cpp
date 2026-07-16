@@ -495,6 +495,57 @@ bool ASF_Support::WriteHeaderObject ( XMP_IO* sourceRef, XMP_IO* destRef, const 
 
 				// eliminate padding (will be created as last object)
 
+			} else if ( IsEqualGUID ( ASF_Extended_Content_Description_Object, objectBase.guid ) &&
+						(changedObjects & ASF_LegacyManager::objectExtendedContentDescription) ) {
+
+				// Diffractor: re-create the Extended Content Description Object. Keep every
+				// descriptor except WM/Category and WM/SharedUserRating, then append the ones
+				// built from XMP so Windows Explorer / Media Player see the current tags & rating.
+				buffer.reserve ( XMP_Uns32( objectBase.size ) );
+				buffer.assign ( XMP_Uns32( objectBase.size ), ' ' );
+				sourceRef->ReadAll ( const_cast<char*>(buffer.data()), XMP_Int32(objectBase.size) );
+
+				std::string kept;
+				XMP_Uns16 keptCount = 0;
+				XMP_Uns16 existingCount = GetUns16LE ( &buffer[kASF_ObjectBaseLen] );
+				XMP_Uns32 dpos = kASF_ObjectBaseLen + 2;
+
+				for ( XMP_Uns16 di = 0; (di < existingCount) && (dpos + 6 <= objectBase.size); ++di ) {
+					XMP_Uns16 nameLen  = GetUns16LE ( &buffer[dpos] );
+					XMP_Uns32 nameOff  = dpos + 2;
+					if ( nameOff + nameLen + 4 > objectBase.size ) break;
+					XMP_Uns16 valueLen = GetUns16LE ( &buffer[nameOff + nameLen + 2] );
+					XMP_Uns32 descLen  = 2 + nameLen + 2 + 2 + valueLen;
+					if ( dpos + descLen > objectBase.size ) break;
+
+					std::string nameUtf8;
+					FromUTF16 ( (const UTF16Unit*)&buffer[nameOff], nameLen / 2, &nameUtf8, false );
+					while ( (! nameUtf8.empty()) && (nameUtf8[nameUtf8.size()-1] == 0) ) nameUtf8.erase ( nameUtf8.size()-1 );
+
+					if ( (nameUtf8 != "WM/Category") && (nameUtf8 != "WM/SharedUserRating") ) {
+						kept.append ( buffer, dpos, descLen );
+						++keptCount;
+					}
+					dpos += descLen;
+				}
+
+				int startPos = (int)header.size();
+				ASF_ObjectBase newBase;
+				newBase.guid = ASF_Extended_Content_Description_Object;
+				newBase.size = 0;
+				header.append ( (const char*)&newBase, kASF_ObjectBaseLen );
+
+				valueUns16LE = MakeUns16LE ( (XMP_Uns16)(keptCount + _legacyManager.GetExtWMCount()) );
+				header.append ( (const char*)&valueUns16LE, 2 );
+				header.append ( kept );
+				header.append ( _legacyManager.GetExtWMDescriptors() );
+
+				valueUns64LE = MakeUns64LE ( header.size() - startPos );
+				std::string newSize ( (const char*)&valueUns64LE, 8 );
+				ReplaceString ( header, newSize, (startPos + 16), 8 );
+
+				exportedObjects |= ASF_LegacyManager::objectExtendedContentDescription;
+
 			} else {
 
 				// simply copy all other objects
@@ -631,6 +682,28 @@ bool ASF_Support::WriteHeaderObject ( XMP_IO* sourceRef, XMP_IO* destRef, const 
 			}
 
 #endif
+
+			if ( newObjects & ASF_LegacyManager::objectExtendedContentDescription ) {
+
+				// Diffractor: the file had no Extended Content Description Object; create one
+				// holding just the WM/Category + WM/SharedUserRating descriptors from XMP.
+				headerStartPos = (int)header.size();
+				newObjectBase.guid = ASF_Extended_Content_Description_Object;
+				newObjectBase.size = 0;
+				header.append ( (const char*)&newObjectBase, kASF_ObjectBaseLen );
+
+				valueUns16LE = MakeUns16LE ( _legacyManager.GetExtWMCount() );
+				header.append ( (const char*)&valueUns16LE, 2 );
+				header.append ( _legacyManager.GetExtWMDescriptors() );
+
+				valueUns64LE = MakeUns64LE ( header.size() - headerStartPos );
+				std::string newSize ( (const char*)&valueUns64LE, 8 );
+				ReplaceString ( header, newSize, (headerStartPos + 16), 8 );
+
+				newObjects &= ~ASF_LegacyManager::objectExtendedContentDescription;
+				writtenObjects ++;
+
+			}
 
 		}
 
@@ -957,7 +1030,8 @@ std::string ASF_Support::ReplaceString ( std::string& operand, std::string& str,
 // =================================================================================================
 
 ASF_LegacyManager::ASF_LegacyManager() : fields(fieldLast), broadcastSet(false), digestComputed(false),
-										 imported(false), objectsExisting(0), objectsToExport(0), legacyDiff(0), padding(0)
+										 imported(false), objectsExisting(0), objectsToExport(0), legacyDiff(0), padding(0),
+										 extWMCount(0)
 {
 	// Nothing more to do.
 }
@@ -1162,6 +1236,19 @@ void ASF_LegacyManager::ImportLegacy ( SXMPMeta* xmp )
 
 // =================================================================================================
 
+// Diffractor: append one Extended-Content-Description descriptor:
+//   UInt16 nameLen | name (UTF-16LE incl null) | UInt16 valueType | UInt16 valueLen | value
+// All little-endian, matching the ASF spec.
+static void AppendWMDescriptor ( std::string & out, const std::string & nameUtf16, XMP_Uns16 valueType, const std::string & value )
+{
+	XMP_Uns16 v;
+	v = MakeUns16LE ( (XMP_Uns16) nameUtf16.size() );  out.append ( (const char*)&v, 2 );
+	out.append ( nameUtf16 );
+	v = MakeUns16LE ( valueType );                     out.append ( (const char*)&v, 2 );
+	v = MakeUns16LE ( (XMP_Uns16) value.size() );      out.append ( (const char*)&v, 2 );
+	out.append ( value );
+}
+
 int ASF_LegacyManager::ExportLegacy ( const SXMPMeta& xmp )
 {
 	int changed = 0;
@@ -1259,6 +1346,49 @@ int ASF_LegacyManager::ExportLegacy ( const SXMPMeta& xmp )
 		}
 	}
 #endif
+
+	// Diffractor: build the WM/Category (tags) and WM/SharedUserRating (rating) descriptors for the
+	// Extended Content Description Object from XMP, so Windows Explorer / Media Player see them.
+	extWMDescriptors.clear();
+	extWMCount = 0;
+	{
+		std::string nameUtf16, valueUtf16;
+
+		XMP_Index tagCount = xmp.CountArrayItems ( kXMP_NS_DC, "subject" );
+		if ( tagCount > 0 ) {
+			ToUTF16 ( (const UTF8Unit*)"WM/Category", 11, &nameUtf16, false );
+			nameUtf16.append ( 2, '\0' );	// UTF-16 null terminator
+			for ( XMP_Index i = 1; i <= tagCount; ++i ) {
+				std::string tag;
+				if ( ! xmp.GetArrayItem ( kXMP_NS_DC, "subject", i, &tag, 0 ) || tag.empty() ) continue;
+				ToUTF16 ( (const UTF8Unit*)tag.data(), tag.size(), &valueUtf16, false );
+				valueUtf16.append ( 2, '\0' );
+				AppendWMDescriptor ( extWMDescriptors, nameUtf16, 0 /* Unicode string */, valueUtf16 );
+				++extWMCount;
+			}
+		}
+
+		std::string ratingStr;
+		if ( xmp.GetProperty ( kXMP_NS_XMP, "Rating", &ratingStr, &flags ) && ! ratingStr.empty() ) {
+			int stars = atoi ( ratingStr.c_str() );
+			if ( stars > 5 ) stars = 5;
+			if ( stars > 0 ) {
+				static const XMP_Uns32 kStarToWin[6] = { 0, 1, 25, 50, 75, 99 };
+				ToUTF16 ( (const UTF8Unit*)"WM/SharedUserRating", 19, &nameUtf16, false );
+				nameUtf16.append ( 2, '\0' );
+				XMP_Uns32 win = MakeUns32LE ( kStarToWin[stars] );
+				std::string val ( (const char*)&win, 4 );
+				AppendWMDescriptor ( extWMDescriptors, nameUtf16, 3 /* DWORD */, val );
+				++extWMCount;
+			}
+		}
+
+		if ( extWMCount > 0 ) {
+			objectsToExport |= objectExtendedContentDescription;
+			legacyDiff += (1 << 20);	// force the safe full-header rewrite (never risky in-place)
+			changed ++;
+		}
+	}
 
 	// find objects, that would need to be created on legacy export
 	int newObjects = (objectsToExport & ~objectsExisting);

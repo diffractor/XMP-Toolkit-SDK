@@ -46,6 +46,9 @@ static const GUID ASF_File_Properties_Object = { MakeUns32LE(0x8cabdca1), MakeUn
 static const GUID ASF_Content_Description_Object = { MakeUns32LE(0x75b22633), MakeUns16LE(0x668e), MakeUns16LE(0x11cf), { 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c } };
 static const GUID ASF_Content_Branding_Object = { MakeUns32LE(0x2211b3fa), MakeUns16LE(0xbd23), MakeUns16LE(0x11d2), { 0xb4, 0xb7, 0x00, 0xa0, 0xc9, 0x55, 0xfc, 0x6e } };
 static const GUID ASF_Content_Encryption_Object = { MakeUns32LE(0x2211b3fb), MakeUns16LE(0xbd23), MakeUns16LE(0x11d2), { 0xb4, 0xb7, 0x00, 0xa0, 0xc9, 0x55, 0xfc, 0x6e } };
+
+// Diffractor: Extended Content Description Object holds Windows WM/* descriptors (tags, rating).
+static const GUID ASF_Extended_Content_Description_Object = { MakeUns32LE(0xd2d0a440), MakeUns16LE(0xe307), MakeUns16LE(0x11d2), { 0x97, 0xf0, 0x00, 0xa0, 0xc9, 0x5e, 0xa8, 0x50 } };
 // padding
 // Remark: regarding to Microsofts spec only the ASF_Header_Object contains a ASF_Padding_Object
 // Real world files show, that the ASF_Header_Extension_Object contains a ASF_Padding_Object
@@ -78,7 +81,8 @@ public:
 		objectFileProperties		= 1 << 0,
 		objectContentDescription	= 1 << 1,
 		objectContentBranding		= 1 << 2,
-		objectContentEncryption		= 1 << 3
+		objectContentEncryption		= 1 << 3,
+		objectExtendedContentDescription = 1 << 4	// Diffractor: WM/* tags & rating
 	};
 
 	enum minObjectSize {
@@ -130,6 +134,11 @@ public:
 	void SetPadding ( XMP_Int64 padding );
 	XMP_Int64 GetPadding();
 
+	// Diffractor: serialized WM/Category + WM/SharedUserRating descriptors to write into the
+	// Extended Content Description Object, and how many descriptors they contain.
+	const std::string & GetExtWMDescriptors() const { return extWMDescriptors; }
+	XMP_Uns16 GetExtWMCount() const { return extWMCount; }
+
 private:
 
 	typedef std::vector<std::string> TFields;
@@ -144,6 +153,10 @@ private:
 	int objectsToExport;
 	XMP_Int64 legacyDiff;
 	XMP_Int64 padding;
+
+	// Diffractor: pre-serialized WM/* descriptors (tags + rating) for the ECD object.
+	std::string extWMDescriptors;
+	XMP_Uns16 extWMCount;
 
 	static std::string NormalizeStringDisplayASCII ( std::string& operand );
 	static std::string NormalizeStringTrailingNull ( std::string& operand );
