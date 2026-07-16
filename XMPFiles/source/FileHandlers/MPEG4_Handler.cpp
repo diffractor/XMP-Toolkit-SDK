@@ -730,6 +730,77 @@ static void ExportXtraTags ( const SXMPMeta & xmp, MOOV_Manager * moovMgr )
 }	// ExportXtraTags
 
 // =================================================================================================
+// ImportXtraTags
+// ==============
+//
+// Diffractor addition: import Windows Explorer / Media Player tags & rating from the 'Xtra' box
+// (moov/udta/Xtra) into dc:subject and xmp:Rating. Only fills values XMP does not already carry, so
+// XMP stays authoritative; this also migrates Windows-only tags into XMP when the file is edited.
+
+static bool ImportXtraTags ( const MOOV_Manager & moovMgr, SXMPMeta * xmp )
+{
+	MOOV_Manager::BoxInfo xtraInfo;
+	MOOV_Manager::BoxRef  xtraRef = moovMgr.GetBox ( "moov/udta/Xtra", &xtraInfo );
+	if ( (xtraRef == 0) || (xtraInfo.content == 0) || (xtraInfo.contentSize < 12) ) return false;
+
+	const XMP_Uns8 * ptr = xtraInfo.content;
+	const XMP_Uns8 * end = ptr + xtraInfo.contentSize;
+	bool imported = false;
+
+	const bool haveSubject = xmp->DoesPropertyExist ( kXMP_NS_DC, "subject" );
+	const bool haveRating  = xmp->DoesPropertyExist ( kXMP_NS_XMP, "Rating" );
+
+	while ( ptr + 12 <= end ) {
+		XMP_Uns32 entrySize = GetUns32BE ( ptr );
+		XMP_Uns32 nameLen   = GetUns32BE ( ptr + 4 );
+		if ( (entrySize < 12) || (ptr + entrySize > end) ) break;
+		const XMP_Uns8 * entryEnd = ptr + entrySize;
+		if ( (nameLen == 0) || (nameLen > 255) || (ptr + 8 + nameLen + 4 > entryEnd) ) { ptr = entryEnd; continue; }
+
+		std::string name ( (const char *)(ptr + 8), nameLen );
+		const XMP_Uns8 * vptr = ptr + 8 + nameLen;
+		XMP_Uns32 valueCount = GetUns32BE ( vptr );
+		vptr += 4;
+
+		const bool isCat = (name == "WM/Category");
+		const bool isRat = (name == "WM/SharedUserRating");
+
+		for ( XMP_Uns32 v = 0; (v < valueCount) && (vptr + 6 <= entryEnd); ++v ) {
+			XMP_Uns32 valueSize = GetUns32BE ( vptr );
+			XMP_Uns16 valueType = GetUns16BE ( vptr + 4 );
+			if ( (valueSize < 6) || (vptr + valueSize > entryEnd) ) break;
+			const XMP_Uns8 * data = vptr + 6;
+			XMP_Uns32 dataLen = valueSize - 6;
+
+			if ( isCat && (valueType == 8) && (! haveSubject) && (dataLen >= 2) ) {
+				std::string utf8;
+				FromUTF16 ( (const UTF16Unit *) data, dataLen / 2, &utf8, false /* little endian */ );
+				while ( (! utf8.empty()) && (utf8[utf8.size() - 1] == 0) ) utf8.erase ( utf8.size() - 1 );
+				if ( ! utf8.empty() ) {
+					xmp->AppendArrayItem ( kXMP_NS_DC, "subject", kXMP_PropArrayIsUnordered, utf8.c_str(), 0 );
+					imported = true;
+				}
+			} else if ( isRat && ((valueType == 19) || (valueType == 21)) && (! haveRating) && (dataLen >= 1) ) {
+				XMP_Uns64 win = 0;
+				for ( XMP_Uns32 b = 0; (b < dataLen) && (b < 8); ++b ) win |= ((XMP_Uns64) data[b]) << (8 * b);
+				int stars = (win == 0) ? 0 : (win <= 12) ? 1 : (win <= 37) ? 2 : (win <= 62) ? 3 : (win <= 87) ? 4 : 5;
+				if ( stars > 0 ) {
+					char buf[8];
+					snprintf ( buf, sizeof(buf), "%d", stars );
+					xmp->SetProperty ( kXMP_NS_XMP, "Rating", buf, 0 );
+					imported = true;
+				}
+			}
+			vptr += valueSize;
+		}
+		ptr = entryEnd;
+	}
+
+	return imported;
+
+}	// ImportXtraTags
+
+// =================================================================================================
 // ExportISOCopyrights
 // ===================
 
@@ -2188,6 +2259,9 @@ void MPEG4_MetaHandler::ProcessXMP()
 	// Import the non-XMP items. Do the imports in reverse priority order, last import wins!
 
 	if ( !xmpOnly ) {
+		// Diffractor: only migrate the Windows 'Xtra' tags/rating into XMP when the file
+		// has no XMP of its own; XMP stays authoritative when present.
+		const bool fileHadXMP = this->containsXMP;
 		MOOV_Manager::BoxInfo mvhdInfo;
 		MOOV_Manager::BoxRef  mvhdRef = this->moovMgr.GetBox ( "moov/mvhd", &mvhdInfo );
 		bool mvhdFound = ((mvhdRef != 0) && (mvhdInfo.contentSize != 0));
@@ -2216,6 +2290,7 @@ void MPEG4_MetaHandler::ProcessXMP()
 			if ( mvhdFound )   this->containsXMP |= ImportMVHDItems ( mvhdInfo, &this->xmpObj );
 			if ( cprtFound )   this->containsXMP |= ImportISOCopyrights ( cprtBoxes, &this->xmpObj );
 			if ( tmcdFound )   this->containsXMP |= ImportTimecodeItems ( this->tmcdInfo, this->tradQTMgr, &this->xmpObj );
+			if ( ! fileHadXMP ) this->containsXMP |= ImportXtraTags ( this->moovMgr, &this->xmpObj );	// Diffractor: Windows tags
 		} else {	// This is a QuickTime file, either traditional or modern.
 
 			if ( mvhdFound )   this->containsXMP |= ImportMVHDItems ( mvhdInfo, &this->xmpObj );
@@ -2226,6 +2301,7 @@ void MPEG4_MetaHandler::ProcessXMP()
 			}
 
 			this->containsXMP |= ImportCr8rItems ( this->moovMgr, &this->xmpObj );
+			if ( ! fileHadXMP ) this->containsXMP |= ImportXtraTags ( this->moovMgr, &this->xmpObj );	// Diffractor: Windows tags
 		}
 	}
 
