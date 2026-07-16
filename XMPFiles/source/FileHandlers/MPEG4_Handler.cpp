@@ -650,6 +650,86 @@ static bool ImportISOCopyrights ( const std::vector<MOOV_Manager::BoxInfo> & cpr
 }	// ImportISOCopyrights
 
 // =================================================================================================
+// ExportXtraTags
+// ==============
+//
+// Diffractor addition: build the Microsoft 'Xtra' box (moov/udta/Xtra) from dc:subject (tags) and
+// xmp:Rating so Windows Explorer / Media Player see Diffractor's tags. Xtra layout (struct sizes
+// big-endian; string values UTF-16LE incl. a null terminator, integer values little-endian):
+//   entry:  UInt32 entrySize (incl. itself) | UInt32 nameSize | char name[nameSize]
+//           | UInt32 valueCount | value[valueCount]
+//   value:  UInt32 valueSize (incl. itself) | UInt16 valueType | data[valueSize-6]
+//           (valueType 8 = VT_LPWSTR, 19 = VT_UI8)
+
+static void AppendXtraU32BE ( std::string * s, XMP_Uns32 v ) { char b[4]; PutUns32BE ( v, b ); s->append ( b, 4 ); }
+static void AppendXtraU16BE ( std::string * s, XMP_Uns16 v ) { char b[2]; PutUns16BE ( v, b ); s->append ( b, 2 ); }
+static void AppendXtraU64LE ( std::string * s, XMP_Uns64 v ) { char b[8]; PutUns64LE ( v, b ); s->append ( b, 8 ); }
+
+static void AppendXtraEntry ( std::string * xtra, const char * name, XMP_Uns32 valueCount, const std::string & values )
+{
+	XMP_Uns32 nameLen = (XMP_Uns32) strlen ( name );
+	AppendXtraU32BE ( xtra, 4 + 4 + nameLen + 4 + (XMP_Uns32) values.size() );	// entrySize
+	AppendXtraU32BE ( xtra, nameLen );
+	xtra->append ( name, nameLen );
+	AppendXtraU32BE ( xtra, valueCount );
+	xtra->append ( values );
+}
+
+static void ExportXtraTags ( const SXMPMeta & xmp, MOOV_Manager * moovMgr )
+{
+	const XMP_Uns32 k_Xtra = 0x58747261;	// 'Xtra'
+	std::string xtra;
+
+	// WM/Category from dc:subject (each keyword is a separate VT_LPWSTR value).
+	XMP_Index tagCount = xmp.CountArrayItems ( kXMP_NS_DC, "subject" );
+	if ( tagCount > 0 ) {
+		std::string values;
+		XMP_Uns32 valueCount = 0;
+		for ( XMP_Index i = 1; i <= tagCount; ++i ) {
+			std::string tag;
+			if ( ! xmp.GetArrayItem ( kXMP_NS_DC, "subject", i, &tag, 0 ) || tag.empty() ) continue;
+			std::string utf16;
+			ToUTF16 ( (const UTF8Unit *) tag.data(), tag.size(), &utf16, false /* little endian */ );
+			utf16.append ( 2, '\0' );	// UTF-16 null terminator
+			AppendXtraU32BE ( &values, 6 + (XMP_Uns32) utf16.size() );	// valueSize
+			AppendXtraU16BE ( &values, 8 );	// VT_LPWSTR
+			values.append ( utf16 );
+			++valueCount;
+		}
+		if ( valueCount > 0 ) AppendXtraEntry ( &xtra, "WM/Category", valueCount, values );
+	}
+
+	// WM/SharedUserRating from xmp:Rating (0-5 stars mapped to Windows' 0-99 scale).
+	std::string ratingStr;
+	if ( xmp.GetProperty ( kXMP_NS_XMP, "Rating", &ratingStr, 0 ) && ! ratingStr.empty() ) {
+		int stars = atoi ( ratingStr.c_str() );
+		if ( stars > 5 ) stars = 5;
+		if ( stars > 0 ) {
+			static const XMP_Uns64 kStarToWin[6] = { 0, 1, 25, 50, 75, 99 };
+			std::string value;
+			AppendXtraU32BE ( &value, 14 );	// valueSize (4 + 2 + 8)
+			AppendXtraU16BE ( &value, 19 );	// VT_UI8
+			AppendXtraU64LE ( &value, kStarToWin[stars] );
+			AppendXtraEntry ( &xtra, "WM/SharedUserRating", 1, value );
+		}
+	}
+
+	// Replace any existing Xtra box under moov/udta.
+	MOOV_Manager::BoxRef udtaRef = moovMgr->GetBox ( "moov/udta", 0 );
+	if ( udtaRef == 0 ) {
+		if ( xtra.empty() ) return;
+		moovMgr->SetBox ( "moov/udta", 0, 0 );
+		udtaRef = moovMgr->GetBox ( "moov/udta", 0 );
+		if ( udtaRef == 0 ) return;
+	}
+
+	moovMgr->DeleteTypeChild ( udtaRef, k_Xtra );
+	if ( ! xtra.empty() )
+		moovMgr->AddChildBox ( udtaRef, k_Xtra, xtra.data(), (XMP_Uns32) xtra.size() );
+
+}	// ExportXtraTags
+
+// =================================================================================================
 // ExportISOCopyrights
 // ===================
 
@@ -2861,6 +2941,7 @@ void MPEG4_MetaHandler::UpdateFile ( bool doSafeUpdate )
 	ExportMVHDItems ( this->xmpObj, &this->moovMgr , haveISOFile);
 	ExportISOCopyrights ( this->xmpObj, &this->moovMgr );
 	ExportQuickTimeItems ( this->xmpObj, &this->tradQTMgr, &this->moovMgr );
+	ExportXtraTags ( this->xmpObj, &this->moovMgr );	// Diffractor: Windows Explorer / Media Player tags
 #if 0
 	ExportQTMetaBoxItems (this->xmpObj, &this->tradQTMgr, &this->moovMgr); //to export metadata present in moov/meta box(currently on CreationDate)
 #endif
