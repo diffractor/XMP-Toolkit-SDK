@@ -501,12 +501,17 @@ bool ASF_Support::WriteHeaderObject ( XMP_IO* sourceRef, XMP_IO* destRef, const 
 				// Diffractor: re-create the Extended Content Description Object. Keep every
 				// descriptor except WM/Category and WM/SharedUserRating, then append the ones
 				// built from XMP so Windows Explorer / Media Player see the current tags & rating.
+				// The object size is a file supplied 64 bit value but every use below is 32 bit.
+				if ( (objectBase.size < (kASF_ObjectBaseLen + 2)) || (objectBase.size > 0x7FFFFFFF) ) {
+					XMP_Throw ( "Bad ASF extended content description size", kXMPErr_BadFileFormat );
+				}
+
 				buffer.reserve ( XMP_Uns32( objectBase.size ) );
 				buffer.assign ( XMP_Uns32( objectBase.size ), ' ' );
 				sourceRef->ReadAll ( const_cast<char*>(buffer.data()), XMP_Int32(objectBase.size) );
 
 				std::string kept;
-				XMP_Uns16 keptCount = 0;
+				XMP_Uns32 keptCount = 0;
 				XMP_Uns16 existingCount = GetUns16LE ( &buffer[kASF_ObjectBaseLen] );
 				XMP_Uns32 dpos = kASF_ObjectBaseLen + 2;
 
@@ -529,13 +534,23 @@ bool ASF_Support::WriteHeaderObject ( XMP_IO* sourceRef, XMP_IO* destRef, const 
 					dpos += descLen;
 				}
 
+				// The descriptor count is a 16 bit field; dropping the kept descriptors is far
+				// better than writing a wrapped count that makes the object unreadable.
+				XMP_Uns32 totalCount = keptCount + _legacyManager.GetExtWMCount();
+				if ( totalCount > 0xFFFF ) {
+					kept.clear();
+					keptCount = 0;
+					totalCount = _legacyManager.GetExtWMCount();
+					if ( totalCount > 0xFFFF ) XMP_Throw ( "Too many ASF descriptors", kXMPErr_BadParam );
+				}
+
 				int startPos = (int)header.size();
 				ASF_ObjectBase newBase;
 				newBase.guid = ASF_Extended_Content_Description_Object;
 				newBase.size = 0;
 				header.append ( (const char*)&newBase, kASF_ObjectBaseLen );
 
-				valueUns16LE = MakeUns16LE ( (XMP_Uns16)(keptCount + _legacyManager.GetExtWMCount()) );
+				valueUns16LE = MakeUns16LE ( (XMP_Uns16) totalCount );
 				header.append ( (const char*)&valueUns16LE, 2 );
 				header.append ( kept );
 				header.append ( _legacyManager.GetExtWMDescriptors() );
@@ -1239,14 +1254,19 @@ void ASF_LegacyManager::ImportLegacy ( SXMPMeta* xmp )
 // Diffractor: append one Extended-Content-Description descriptor:
 //   UInt16 nameLen | name (UTF-16LE incl null) | UInt16 valueType | UInt16 valueLen | value
 // All little-endian, matching the ASF spec.
-static void AppendWMDescriptor ( std::string & out, const std::string & nameUtf16, XMP_Uns16 valueType, const std::string & value )
+static bool AppendWMDescriptor ( std::string & out, const std::string & nameUtf16, XMP_Uns16 valueType, const std::string & value )
 {
+	// Both lengths are 16 bit fields. Truncating them would leave a structurally invalid
+	// object that no reader - including this one - can walk again.
+	if ( (nameUtf16.size() > 0xFFFF) || (value.size() > 0xFFFF) ) return false;
+
 	XMP_Uns16 v;
 	v = MakeUns16LE ( (XMP_Uns16) nameUtf16.size() );  out.append ( (const char*)&v, 2 );
 	out.append ( nameUtf16 );
 	v = MakeUns16LE ( valueType );                     out.append ( (const char*)&v, 2 );
 	v = MakeUns16LE ( (XMP_Uns16) value.size() );      out.append ( (const char*)&v, 2 );
 	out.append ( value );
+	return true;
 }
 
 int ASF_LegacyManager::ExportLegacy ( const SXMPMeta& xmp )
@@ -1358,13 +1378,12 @@ int ASF_LegacyManager::ExportLegacy ( const SXMPMeta& xmp )
 		if ( tagCount > 0 ) {
 			ToUTF16 ( (const UTF8Unit*)"WM/Category", 11, &nameUtf16, false );
 			nameUtf16.append ( 2, '\0' );	// UTF-16 null terminator
-			for ( XMP_Index i = 1; i <= tagCount; ++i ) {
+			for ( XMP_Index i = 1; (i <= tagCount) && (extWMCount < 0xF000); ++i ) {
 				std::string tag;
 				if ( ! xmp.GetArrayItem ( kXMP_NS_DC, "subject", i, &tag, 0 ) || tag.empty() ) continue;
 				ToUTF16 ( (const UTF8Unit*)tag.data(), tag.size(), &valueUtf16, false );
 				valueUtf16.append ( 2, '\0' );
-				AppendWMDescriptor ( extWMDescriptors, nameUtf16, 0 /* Unicode string */, valueUtf16 );
-				++extWMCount;
+				if ( AppendWMDescriptor ( extWMDescriptors, nameUtf16, 0 /* Unicode string */, valueUtf16 ) ) ++extWMCount;
 			}
 		}
 
@@ -1378,8 +1397,7 @@ int ASF_LegacyManager::ExportLegacy ( const SXMPMeta& xmp )
 				nameUtf16.append ( 2, '\0' );
 				XMP_Uns32 win = MakeUns32LE ( kStarToWin[stars] );
 				std::string val ( (const char*)&win, 4 );
-				AppendWMDescriptor ( extWMDescriptors, nameUtf16, 3 /* DWORD */, val );
-				++extWMCount;
+				if ( AppendWMDescriptor ( extWMDescriptors, nameUtf16, 3 /* DWORD */, val ) ) ++extWMCount;
 			}
 		}
 

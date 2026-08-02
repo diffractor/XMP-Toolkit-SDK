@@ -2697,6 +2697,7 @@ ExportArrayTIFF ( TIFF_Manager * tiff, XMP_Uns8 ifd, const TIFF_MappingToXMP & m
 		XMP_Uns16 uns16;
 		for ( size_t i = 1; i <= arraySize; ++i, ++shortPtr ) {
 			SXMPUtils::ComposeArrayItemPath ( xmpNS, xmpArray, (XMP_Index)i, &itemPath );
+			int32 = 0;	// GetProperty_Int leaves it untouched when the item is missing.
 			xmp.GetProperty_Int ( xmpNS, itemPath.c_str(), &int32, 0 );
 			uns16 = (XMP_Uns16)int32;
 			if ( ! nativeEndian ) uns16 = Flip2 ( uns16 );
@@ -2738,6 +2739,7 @@ ExportArrayTIFF ( TIFF_Manager * tiff, XMP_Uns8 ifd, const TIFF_MappingToXMP & m
 		XMP_Uns8 uns8;
 		for (size_t i = 1; i <= arraySize; ++i, ++bytePtr) {
 			SXMPUtils::ComposeArrayItemPath(xmpNS, xmpArray, (XMP_Index)i, &itemPath);
+			int32 = 0;	// GetProperty_Int leaves it untouched when the item is missing.
 			xmp.GetProperty_Int(xmpNS, itemPath.c_str(), &int32, 0);
 			uns8 = (XMP_Uns8)int32;			
 			*bytePtr = uns8;
@@ -3081,7 +3083,8 @@ ExportTIFF_WindowsEncodedString(const SXMPMeta& xmp, const char* xmpNS, const ch
 
 		bool foundXMP = xmp.GetProperty(xmpNS, xmpProp, &xmpValue, &xmpFlags);
 		if (!foundXMP) {
-			tiff->DeleteTag(ifd, id);
+			// Absent from XMP means 'not imported', not 'the user cleared it'. Deleting here
+			// silently threw away XPTitle / XPComment / XPAuthor / XPSubject on every save.
 			return;
 		}
 

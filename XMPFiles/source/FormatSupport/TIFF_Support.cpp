@@ -365,6 +365,9 @@ bool TIFF_Manager::DecodeWindowsString(const void* encodedPtr, size_t encodedLen
 		const UTF16Unit* utf16Ptr = (const UTF16Unit*)encodedPtr;
 		size_t utf16Len = encodedLen / 2;	// The number of UTF-16 storage units, not bytes.
 		if (utf16Len == 0) return false;
+		// The XP* tags are null terminated UCS-2; the terminator is not part of the value.
+		while ((utf16Len > 0) && (utf16Ptr[utf16Len - 1] == 0)) --utf16Len;
+		if (utf16Len == 0) return false;
 		//if ((*utf16Ptr == 0xFEFF) || (*utf16Ptr == 0xFFFE)) {	// Check for an explicit BOM
 		//	isBigEndian = (*((XMP_Uns8*)utf16Ptr) == 0xFE);
 		//	utf16Ptr += 1;	// Don't translate the BOM.
@@ -490,6 +493,9 @@ bool TIFF_Manager::EncodeWindowsString(const std::string& utf8Str, std::string* 
 
 	try {
 		UTF8_to_UTF16((const UTF8Unit*)utf8Str.c_str(), utf8Str.size(), false, encodedStr);
+		// The XP* tags are specified as null terminated UCS-2. Explorer and other readers
+		// expect the terminator; without it the value runs into whatever follows.
+		encodedStr->append(2, '\0');
 		return true;
 	}
 	catch (...) {
@@ -499,7 +505,7 @@ bool TIFF_Manager::EncodeWindowsString(const std::string& utf8Str, std::string* 
 
 	return false;	// ! Ignore all other encodings.
 
-}	// TIFF_Manager::DecodeWindowsString
+}	// TIFF_Manager::EncodeWindowsString
 
 void TIFF_Manager::NotifyClient( XMP_ErrorSeverity severity, XMP_Error & error )
 {

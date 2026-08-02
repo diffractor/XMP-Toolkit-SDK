@@ -18,8 +18,11 @@ extern XMPFileHandler* WEBP_MetaHandlerCTor(XMPFiles* parent);
 extern bool WEBP_CheckFormat(XMP_FileFormat format, XMP_StringPtr filePath,
                              XMP_IO* fileRef, XMPFiles* parent);
 
+// The whole file is rebuilt from cached chunks on every update, so it can also be written
+// to a temp file - which lets XMPFiles offer a crash safe update.
 static const XMP_OptionBits kWEBP_HandlerFlags =
-    (kXMPFiles_CanInjectXMP | kXMPFiles_CanExpand | kXMPFiles_PrefersInPlace |
+    (kXMPFiles_CanInjectXMP | kXMPFiles_CanExpand | kXMPFiles_CanRewrite |
+     kXMPFiles_PrefersInPlace | kXMPFiles_AllowsSafeUpdate |
      kXMPFiles_AllowsOnlyXMP | kXMPFiles_ReturnsRawPacket |
      kXMPFiles_CanReconcile);
 
@@ -43,6 +46,9 @@ public:
     // XMP data.
     PSIR_Manager* psirMgr;
     IPTC_Manager* iptcMgr;
+
+private:
+    void PrepareUpdate();
 };
 
 #endif /* __WEBP_Handler_hpp__ */

@@ -122,7 +122,7 @@ public:
     Chunk(Container* parent, XMP_Uns32 tag);
     virtual ~Chunk();
 
-    virtual void write(WEBP_MetaHandler* handler);
+    virtual void write(WEBP_MetaHandler* handler, XMP_IO* file);
 
     Container* parent;
     XMP_Uns32 tag;
@@ -130,6 +130,11 @@ public:
     XMP_Int64 pos;
     XMP_Int64 size;
     bool needsRewrite;
+
+protected:
+    // For Container, which owns the 12 byte RIFF/WEBP header and must not slurp the
+    // whole file payload into data the way the reading constructor does.
+    Chunk(XMP_Uns32 tag, XMP_Int64 size);
 };
 
 class XMPChunk
@@ -137,7 +142,7 @@ class XMPChunk
 public:
     XMPChunk(Container* parent, WEBP_MetaHandler* handler);
     XMPChunk(Container* parent);
-    void write(WEBP_MetaHandler* handler);
+    void write(WEBP_MetaHandler* handler, XMP_IO* file);
 };
 
 class VP8XChunk
@@ -161,11 +166,14 @@ public:
     Container(WEBP_MetaHandler* handler);
     ~Container();
 
-    void write(WEBP_MetaHandler* handler);
+    void write(WEBP_MetaHandler* handler, XMP_IO* file);
     void addChunk(Chunk*);
     Chunk* getExifChunk();
 
     Chunks chunks;
+    // Every chunk in the order it appeared in the file, so a rewrite cannot move the
+    // XMP packet on top of another chunk's data.
+    std::vector<Chunk*> ordered;
     VP8XChunk* vp8x;
 };
 

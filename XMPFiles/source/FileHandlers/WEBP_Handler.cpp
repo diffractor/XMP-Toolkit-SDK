@@ -84,11 +84,9 @@ void WEBP_MetaHandler::CacheFileData()
 
     file->Rewind();
 
-    XMP_Int64 filePos = 0;
-    while (filePos < this->initialFileSize) {
-        this->mainChunk = new WEBP::Container(this);
-        filePos = file->Offset();
-    }
+    // The container consumes every chunk to the end of the file. Constructing it in a loop
+    // leaked one container per extra pass.
+    this->mainChunk = new WEBP::Container(this);
 
     // covered before => internal error if it occurs
     XMP_Validate(file->Offset() == this->initialFileSize,
@@ -152,11 +150,32 @@ void WEBP_MetaHandler::ProcessXMP()
     this->processedXMP = true;
 }
 
-void WEBP_MetaHandler::UpdateFile(bool /*doSafeUpdate*/)
+void WEBP_MetaHandler::UpdateFile(bool doSafeUpdate)
+{
+    XMP_Validate(this->needsUpdate, "nothing to update",
+                 kXMPErr_InternalFailure);
+    XMP_Assert(!doSafeUpdate); // XMPFiles takes care of the safe update.
+
+    this->PrepareUpdate();
+    this->mainChunk->write(this, this->parent->ioRef);
+    this->needsUpdate = false; // do last for safety
+}
+
+void WEBP_MetaHandler::WriteTempFile(XMP_IO* tempRef)
 {
     XMP_Validate(this->needsUpdate, "nothing to update",
                  kXMPErr_InternalFailure);
 
+    this->PrepareUpdate();
+    tempRef->Truncate(0);
+    this->mainChunk->write(this, tempRef);
+    this->needsUpdate = false; // do last for safety
+}
+
+// Everything both update paths need before any byte is written: the whole file is rebuilt
+// from the cached chunks, so this must not touch the original stream.
+void WEBP_MetaHandler::PrepareUpdate()
+{
     bool xmpOnly = false;
     if (this->parent) {
         xmpOnly =
@@ -171,11 +190,6 @@ void WEBP_MetaHandler::UpdateFile(bool /*doSafeUpdate*/)
                 XMP_Uns8* exifPtr;
                 XMP_Uns32 exifLen =
                     this->exifMgr->UpdateMemoryStream((void**)&exifPtr);
-                //RawDataBlock exifData(&exifChunk->data[0], &exifChunk->data[6]);
-                //exifData.insert(exifData.begin() + 6, &exifPtr[0], &exifPtr[exifLen]);            	
-                //exifChunk->data = exifData;
-                //exifChunk->size = exifLen + 6;
-                //exifChunk->needsRewrite = true;
 
                 RawDataBlock exifData(exifPtr, exifPtr + exifLen);
                 exifChunk->data = exifData;
@@ -191,15 +205,4 @@ void WEBP_MetaHandler::UpdateFile(bool /*doSafeUpdate*/)
     this->packetInfo.length = kXMPFiles_UnknownLength;
 
     this->xmpObj.SerializeToBuffer(&this->xmpPacket, kXMP_OmitPacketWrapper);
-
-    this->mainChunk->write(this);
-    this->needsUpdate = false; // do last for safety
-}
-
-void WEBP_MetaHandler::WriteTempFile(XMP_IO* tempRef)
-{
-    IgnoreParam(tempRef);
-    XMP_Throw("WEBP_MetaHandler::WriteTempFile: Not supported (must go through "
-              "UpdateFile)",
-              kXMPErr_Unavailable);
 }

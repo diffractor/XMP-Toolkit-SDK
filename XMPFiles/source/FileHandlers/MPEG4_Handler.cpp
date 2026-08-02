@@ -740,6 +740,18 @@ static void ExportXtraTags ( const SXMPMeta & xmp, MOOV_Manager * moovMgr )
 	}
 
 	// Replace any existing Xtra box under moov/udta.
+	MOOV_Manager::BoxInfo existingInfo;
+	MOOV_Manager::BoxRef existingXtra = moovMgr->GetBox ( "moov/udta/Xtra", &existingInfo );
+
+	// Rewriting a byte identical box still marks the tree changed, which forces a full 'moov'
+	// relocation - a whole file rewrite for a large movie - on every save.
+	if ( existingXtra != 0 ) {
+		if ( ((size_t)existingInfo.contentSize == xtra.size()) &&
+			 ( xtra.empty() || (memcmp ( existingInfo.content, xtra.data(), xtra.size() ) == 0) ) ) return;
+	} else if ( xtra.empty() ) {
+		return;
+	}
+
 	MOOV_Manager::BoxRef udtaRef = moovMgr->GetBox ( "moov/udta", 0 );
 	if ( udtaRef == 0 ) {
 		if ( xtra.empty() ) return;

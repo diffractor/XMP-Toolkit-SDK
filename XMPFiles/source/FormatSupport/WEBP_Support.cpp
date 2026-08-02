@@ -28,12 +28,13 @@ Chunk::Chunk(Container* parent_, WEBP_MetaHandler* handler)
     this->tag = XIO::ReadUns32_LE(file);
     this->size = XIO::ReadUns32_LE(file);
 
-    // Make sure the size is within expected bounds.
-    if ((this->pos + this->size + 8) > handler->initialFileSize) {
+    // Make sure the size is within expected bounds. The declared size is attacker controlled
+    // and is cast to a signed 32 bit length below, so cap it as well as bounds check it.
+    if (this->size > 0x7FFFFFFF ||
+        (this->pos + this->size + 8) > handler->initialFileSize) {
         XMP_Throw("Bad RIFF chunk size", kXMPErr_BadFileFormat);
     }
 
-    this->data.reserve((XMP_Int32) this->size);
     this->data.assign((XMP_Int32) this->size, '\0');
     file->ReadAll((void*)this->data.data(), (XMP_Int32) this->size);
 
@@ -47,22 +48,29 @@ Chunk::Chunk(Container* parent_, WEBP_MetaHandler* handler)
 Chunk::Chunk(Container* parent_, XMP_Uns32 tag_)
   : parent(parent_), tag(tag_)
 {
+    this->pos = 0;
+    this->size = 0;
     this->needsRewrite = true;
 }
 
-void Chunk::write(WEBP_MetaHandler* handler)
+// Constructor for the container itself
+Chunk::Chunk(XMP_Uns32 tag_, XMP_Int64 size_)
+  : parent(NULL), tag(tag_)
 {
-    XMP_IO* file = handler->parent->ioRef;
-	
-    if (this->needsRewrite || this->parent->needsRewrite) {
-        this->pos = file->Offset();
-        XIO::WriteUns32_LE(file, this->tag);
-        XIO::WriteUns32_LE(file, (XMP_Uns32) this->size);
-        file->Write(this->data.data(), (XMP_Int32) this->size);
-    }
-    else {
-        file->Seek(this->pos + this->size + 8, kXMP_SeekFromStart);
-    }
+    this->pos = 0;
+    this->size = size_;
+    this->needsRewrite = false;
+}
+
+void Chunk::write(WEBP_MetaHandler* handler, XMP_IO* file)
+{
+    IgnoreParam(handler);
+
+    this->pos = file->Offset();
+    XIO::WriteUns32_LE(file, this->tag);
+    XIO::WriteUns32_LE(file, (XMP_Uns32) this->size);
+    file->Write(this->data.data(), (XMP_Int32) this->size);
+
     if (this->size & 1) {
         const XMP_Uns8 zero = 0;
         file->Write(&zero, 1);
@@ -86,10 +94,9 @@ XMPChunk::XMPChunk(Container* parent_, WEBP_MetaHandler* handler)
     handler->packetInfo.offset = this->pos + 8;
     handler->packetInfo.length = (XMP_Int32) this->data.size();
 
-    handler->xmpPacket.reserve(handler->packetInfo.length);
-    handler->xmpPacket.assign(handler->packetInfo.length, '\0');
-    handler->xmpPacket.insert(handler->xmpPacket.begin(), this->data.begin(),
-                              this->data.end());
+    // Exactly the packet bytes. Reserving and then inserting at the front left the packet
+    // followed by an equal run of NULs, which the XML parser then choked on.
+    handler->xmpPacket.assign(this->data.begin(), this->data.end());
 
     handler->containsXMP = true; // last, after all possible failure
 
@@ -97,10 +104,10 @@ XMPChunk::XMPChunk(Container* parent_, WEBP_MetaHandler* handler)
     handler->xmpChunk = this;
 }
 
-void XMPChunk::write(WEBP_MetaHandler* handler)
+void XMPChunk::write(WEBP_MetaHandler* handler, XMP_IO* file)
 {
-    XMP_IO* file = handler->parent->ioRef;
     this->size = handler->xmpPacket.size();
+    this->pos = file->Offset();
     XIO::WriteUns32_LE(file, this->tag);
     XIO::WriteUns32_LE(file, (XMP_Uns32) this->size);
     file->Write(handler->xmpPacket.data(), (XMP_Int32) this->size);
@@ -172,11 +179,16 @@ void VP8XChunk::xmp(bool hasXMP)
     }
 }
 
-Container::Container(WEBP_MetaHandler* handler) : Chunk(NULL, handler)
+Container::Container(WEBP_MetaHandler* handler)
+  : Chunk(kChunk_RIFF, handler->initialFileSize - 8)
 {
-    this->needsRewrite = false;
+    this->vp8x = NULL;
 
     XMP_IO* file = handler->parent->ioRef;
+
+    if (handler->initialFileSize < 12) {
+        XMP_Throw("Truncated RIFF header", kXMPErr_BadFileFormat);
+    }
 
     file->Seek(12, kXMP_SeekFromStart);
 
@@ -237,46 +249,50 @@ void Container::addChunk(Chunk* chunk)
         idx = WEBP_CHUNK_UNKNOWN;
     }
     this->chunks[idx].push_back(chunk);
+    this->ordered.push_back(chunk);
 }
 
-void Container::write(WEBP_MetaHandler* handler)
+void Container::write(WEBP_MetaHandler* handler, XMP_IO* file)
 {
-    XMP_IO* file = handler->parent->ioRef;
+    // Every chunk is rewritten from its cached data, in the order it appeared in the file.
+    // Emitting by chunk category instead reordered the payload of any file whose physical
+    // order differed, writing the XMP packet over live image data before truncating the tail.
     file->Rewind();
     XIO::WriteUns32_LE(file, this->tag);
     XIO::WriteUns32_LE(file, (XMP_Uns32) this->size);
     XIO::WriteUns32_LE(file, kChunk_WEBP);
 
-    size_t i, j;
-    std::vector<Chunk*> chunkVect;
-    for (i = 0; i < WEBP_CHUNK_NIL; i++) {
-        chunkVect = this->chunks[i];
-        for (j = 0; j < chunkVect.size(); j++) {
-            chunkVect.at(j)->write(handler);
+    // VP8X must be the first chunk of an extended format file, and is synthesised at the end
+    // of the list when converting from the simple format.
+    if (this->vp8x != NULL) {
+        this->vp8x->write(handler, file);
+    }
+
+    for (size_t i = 0; i < this->ordered.size(); i++) {
+        Chunk* chunk = this->ordered[i];
+        if (chunk != this->vp8x) {
+            chunk->write(handler, file);
         }
     }
+
     XMP_Int64 lastOffset = file->Offset();
     this->size = lastOffset - 8;
-    file->Seek(this->pos + 4, kXMP_SeekFromStart);
+    file->Seek(4, kXMP_SeekFromStart);
     XIO::WriteUns32_LE(file, (XMP_Uns32) this->size);
     file->Seek(lastOffset, kXMP_SeekFromStart);
-    if (lastOffset < handler->initialFileSize) {
+    if (lastOffset < file->Length()) {
         file->Truncate(lastOffset);
     }
 }
 
 Container::~Container()
 {
-    Chunk* chunk;
-    size_t i;
-    std::vector<Chunk*> chunkVect;
-    for (i = 0; i < WEBP_CHUNK_NIL; i++) {
-        chunkVect = this->chunks[i];
-        while (!chunkVect.empty()) {
-            chunk = chunkVect.back();
-            delete chunk;
-            chunkVect.pop_back();
-        }
+    for (size_t i = 0; i < this->ordered.size(); i++) {
+        delete this->ordered[i];
+    }
+    this->ordered.clear();
+    for (size_t i = 0; i < WEBP_CHUNK_NIL; i++) {
+        this->chunks[i].clear();
     }
 }
 }
