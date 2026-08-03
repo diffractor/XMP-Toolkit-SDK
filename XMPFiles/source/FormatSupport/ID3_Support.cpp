@@ -669,12 +669,15 @@ bool ID3v2Frame::getFrameValue ( XMP_Uns8 majorVersion, XMP_Uns32 logicalID, std
 			std::string tmp ( this->content, this->contentSize );
 			bool bigEndian = true;	// assume for now (if no BOM follows)
 
-			if ( GetUns16BE ( &this->content[pos] ) == 0xFEFF ) {
-				pos += 2;
-				bigEndian = true;
-			} else if ( GetUns16BE ( &this->content[pos] ) == 0xFFFE ) {
-				pos += 2;
-				bigEndian = false;
+			// A truncated frame can end before the BOM, so only read those two bytes when they exist.
+			if ( (this->contentSize - pos) >= 2 ) {
+				if ( GetUns16BE ( &this->content[pos] ) == 0xFEFF ) {
+					pos += 2;
+					bigEndian = true;
+				} else if ( GetUns16BE ( &this->content[pos] ) == 0xFFFE ) {
+					pos += 2;
+					bigEndian = false;
+				}
 			}
 
 			FromUTF16 ( (UTF16Unit*)&this->content[pos], ((this->contentSize - pos)) / 2, utf8string, bigEndian );
@@ -686,7 +689,9 @@ bool ID3v2Frame::getFrameValue ( XMP_Uns8 majorVersion, XMP_Uns32 logicalID, std
 		{
 			if ( commMode && (! advancePastCOMMDescriptor ( pos )) ) return false; // not a frame of interest!
 		
-			if ( (GetUns32BE ( &this->content[pos]) & 0xFFFFFF00 ) == 0xEFBBBF00 ) {
+			// Compare just the three BOM bytes. The previous 4-byte read ran past the end of a truncated
+			// frame, and requiring 4 bytes here would discard legitimate 1-3 byte values such as "U2".
+			if ( ((this->contentSize - pos) >= 3) && CheckBytes ( &this->content[pos], "\xEF\xBB\xBF", 3 ) ) {
 				pos += 3;	// swallow any BOM, just in case
 			}
 

@@ -3338,8 +3338,14 @@ XMPUtils::SetTimeZone ( XMP_DateTime * xmpTime )
 		if ( now == -1 ) XMP_Throw ( "Failure from ANSI C time function", kXMPErr_ExternalFailure );
 		ansi_localtime ( &now, &tmLocal );
 	} else {
-		tmLocal.tm_year = xmpTime->year - 1900;
-		while ( tmLocal.tm_year < 70 ) tmLocal.tm_year += 4;	// ! Some versions of mktime barf on years before 1970.
+		// ! Some versions of mktime (including the Windows CRT) fail for years before 1970. Only the
+		// zone offset is wanted here, so shift such years forward in whole 4-year steps to keep the
+		// leap-year phase. Computed in 64-bit and in one step: the original loop incremented by 4 until
+		// it reached 1970, which overflowed and ran for hundreds of millions of iterations on a
+		// far-negative year from malformed metadata.
+		XMP_Int64 shiftedYear = static_cast<XMP_Int64>( xmpTime->year ) - 1900;
+		if ( shiftedYear < 70 ) shiftedYear += ((70 - shiftedYear + 3) / 4) * 4;
+		tmLocal.tm_year = static_cast<int>( shiftedYear );
 		tmLocal.tm_mon	 = xmpTime->month - 1;
 		tmLocal.tm_mday	 = xmpTime->day;
 	}

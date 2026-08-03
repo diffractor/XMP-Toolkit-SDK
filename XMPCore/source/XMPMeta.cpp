@@ -1406,8 +1406,8 @@ void XMP_Node::GetFullQualifiedName( XMP_StringPtr * uriStr, XMP_StringLen * uri
 
 		XMP_VarString prefix ( this->name, 0, colonPos );
 		XMPMeta::GetNamespaceURI ( prefix.c_str(), uriStr, uriSize );
-		*nameStr = this->name.c_str() + colonPos + 1;
-		*nameSize = static_cast<XMP_StringLen>( this->name.size() - colonPos - 1 );
+		if ( nameStr != 0 ) *nameStr = this->name.c_str() + colonPos + 1;
+		if ( nameSize != 0 ) *nameSize = static_cast<XMP_StringLen>( this->name.size() - colonPos - 1 );
 	}
 }
 

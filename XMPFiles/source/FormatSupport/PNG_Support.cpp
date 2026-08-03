@@ -260,9 +260,12 @@ namespace PNG_Support
 					}
 
 					//if current buffer have enough data for current chunk and next chunk's 8 bytes
-					if ((bufferLimit - tempBuffer) > static_cast<XMP_Int64>((chunkLength + CRC + 8)))
+					// ! Widened to 64 bits: a declared chunkLength near 2^32 made "chunkLength + CRC + 8" wrap
+					// in 32-bit arithmetic, so this test passed and tempBuffer advanced far beyond bufferLimit.
+					const XMP_Int64 chunkSpan = static_cast<XMP_Int64>(chunkLength) + CRC;
+					if ((bufferLimit - tempBuffer) > (chunkSpan + 8))
 					{
-						tempBuffer += chunkLength + CRC;
+						tempBuffer += chunkSpan;
 						continue;
 					}
 
